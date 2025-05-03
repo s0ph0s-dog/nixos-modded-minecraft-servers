@@ -66,6 +66,7 @@ with lib; let
   '';
 
   mkInstanceName = name: "mc-${name}";
+  mkBackupInstanceName = name: (mkInstanceName name) + "-backup";
 in {
   options = {
     services.modded-minecraft-servers = {
@@ -89,11 +90,13 @@ in {
 
   config = let
     enabledInstances = filterAttrs (_: x: x.enable) cfg.instances;
+    enabledInstancesWBackups = filterAttrs (_: x: x.enable && x.backups.enable) cfg.instances;
 
     parentDir = cfg.parentDir;
 
     # Attrset options
     eachEnabledInstance = f: mapAttrs' (i: c: nameValuePair (mkInstanceName i) (f i c)) enabledInstances;
+    eachEnabledInstanceWBackups = f: mapAttrs' (i: c: nameValuePair (mkBackupInstanceName i) (f i c)) enabledInstancesWBackups;
 
     serverPorts = mapAttrsToList (_: v: v.serverConfig.server-port) enabledInstances;
     rconPorts =
@@ -140,7 +143,7 @@ in {
       )
     ];
 
-    systemd.services = eachEnabledInstance (name: icfg: {
+    systemd.services = (eachEnabledInstance (name: icfg: {
       description = "Minecraft Server ${name}";
       wantedBy = ["multi-user.target"];
       after = ["network.target"];
@@ -182,6 +185,59 @@ in {
         cp ${serverPropertiesFile icfg.serverConfig} server.properties
         chmod 644 server.properties
       '';
+    })) // (eachEnabledInstanceWBackups (name: icfg: let
+      fullName = mkInstanceName name;
+      requisiteService = "${fullName}.service";
+      backupFile = icfg.backups.archiveDir + "/backups.zpaq";
+    in {
+      path = [
+        pkgs.zpaq
+        pkgs.inotify-tools
+        pkgs.mcrcon
+        pkgs.bash
+        pkgs.gawk
+        pkgs.waitsilence
+      ];
+      script = ''
+        set -eu
+
+        export MCRCON_PORT=${toString icfg.serverConfig.rcon-port}
+        export MCRCON_PASS=${icfg.serverConfig.rcon-password}
+	# Never leave saving off.
+	trap 'mcrcon save-on; trap - EXIT; exit' EXIT INT HUP
+
+        mcrcon "say Beginning world backup (contact s0ph0s if it hasn't finished after ~30 seconds)" save-all save-off
+
+        CMD='inotifywait -m -r server/world --exclude "^./dynmap.*" | grep -v ACCESS'
+
+        # Ensure minecraft has finished writing its files out:
+        waitsilence -timeout 5s -command "$CMD"
+
+        zpaq -t1 add "${backupFile}" ~/world
+        BACKUP_SIZE="$(du -h "${backupFile}" | awk '{ print $1 }')"
+
+        mcrcon save-on "say World backup completed (cumulative size: $BACKUP_SIZE)."
+	# Don't try to turn on saving again after we already turned it on.
+	trap - EXIT
+      '';
+      requisite = [ requisiteService ];
+      after = [ requisiteService ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = fullName;
+        WorkingDirectory = "${icfg.parentDir}/${fullName}";
+      };
+    }));
+
+    systemd.timers = eachEnabledInstanceWBackups (name: icfg: let
+      backupUnitName = "${mkBackupInstanceName name}.service";
+    in {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = icfg.backups.period;
+        OnUnitActiveSec = icfg.backups.period;
+        Unit = backupUnitName;
+      };
     });
 
     users.users = eachEnabledInstance (name: icfg: let

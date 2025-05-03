@@ -5,6 +5,7 @@ pkgs: {
   ...
 }:
 with lib; let
+  mkInstanceName = name: "mc-${name}";
   mkJvmMxFlag = icfg: optionalString (icfg.jvmMaxAllocation != "") "-Xmx${icfg.jvmMaxAllocation}";
   mkJvmMsFlag = icfg: optionalString (icfg.jvmInitialAllocation != "") "-Xms${icfg.jvmInitialAllocation}";
   mkJvmOptString = icfg: "${mkJvmMxFlag icfg} ${mkJvmMsFlag icfg} ${icfg.jvmOpts}";
@@ -161,6 +162,37 @@ in {
         of ops, banned players and banned IPs is maintained statefully, either
         by hand or through console commands/rcon.
       '';
+    };
+
+    backups = mkOption {
+      default = {};
+      type = with types; submodule {
+        options = {
+	  enable = mkEnableOption "Enable hourly backups of this instance's world.";
+
+          archiveDir = mkOption {
+	    type = with types; str;
+	    defaultText = "config.services.modded-minecraft-servers.instances.\${name}.parentDir";
+	    default = "${config.parentDir}/${mkInstanceName name}";
+	    description = ''
+	      The directory in which the backup archive will be created.  It will be named <literal>backups.zpaq</literal>.
+	    '';
+	  };
+
+	  period = mkOption {
+	    type = with types; str;
+	    default = "1h";
+	    description = ''
+	      The duration of time between backups.  This must be a valid
+	      systemd time span (see <link
+	      linkend="https://www.freedesktop.org/software/systemd/man/latest/systemd.time.html#Parsing%20Time%20Spans">systemd.time(7)</link>).
+
+	      Do not set this to a value smaller than 30 seconds.  Sensible
+	      values are between 15m and 1d.
+	    '';
+	  };
+	};
+      };
     };
   };
 }
